@@ -54,34 +54,3 @@ npm run build
 ```
 
 每次发布源码修改时，请把重新生成的 `dist/` 一起上传。安装过扩展的用户可在 `chrome://extensions` 点击“重新加载”，再刷新目标页面。
-
-## 发布到 GitHub
-
-建议上传：
-
-```text
-src/
-public/
-plugins/
-dist/
-package.json
-package-lock.json
-tsconfig.json
-vite.config.ts
-README.md
-.gitignore
-marketplace.json
-codex-marketplace.json
-```
-
-不要上传：
-
-```text
-node_modules/
-.agents/
-.codex/
-.env*（除 .env.example 外）
-证书、私钥、账号凭据、日志和临时文件
-```
-
-`dist/` 会提交到仓库，GitHub 下载后可以直接加载；`.gitignore` 会继续排除依赖、凭据与本机配置。
