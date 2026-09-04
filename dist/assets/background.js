@@ -1,0 +1,1 @@
+chrome.action.onClicked.addListener(async e=>{var t;if(e.id&&(t=e.url)!=null&&t.startsWith("file://"))try{await chrome.tabs.sendMessage(e.id,{type:"show-editor"})}catch{await chrome.scripting.executeScript({target:{tabId:e.id},files:["content/editor.js"]})}});

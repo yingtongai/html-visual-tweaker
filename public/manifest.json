@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "HTML Visual Tweaker",
+  "version": "0.1.0",
+  "description": "Visually tune HTML pages and keep per-page style history.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "action": {
+    "default_title": "Toggle HTML editor"
+  },
+  "background": { "service_worker": "assets/background.js", "type": "module" },
+  "content_scripts": [
+    {
+      "matches": ["file:///*"],
+      "js": ["content/editor.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": ["file:///*"]
+}
