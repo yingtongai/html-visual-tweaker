@@ -1,0 +1,15 @@
+node_modules/
+.vite/
+.env
+.env.*
+!.env.example
+.agents/
+.codex/
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
+*.tmp
+*.temp
+release/
