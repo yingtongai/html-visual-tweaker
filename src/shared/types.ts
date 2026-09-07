@@ -5,6 +5,7 @@ export interface StyleRule {
   fingerprint: string;
   properties: Partial<Record<EditableProperty, string>>;
   textContent?: string;
+  imageSource?: string;
 }
 
 export interface SavedVersion {
