@@ -50,13 +50,14 @@ async function init() {
   const shadow = root.attachShadow({ mode: 'open' });
   const shadowCss = cssText.replace(/#html-tweaker-root/g, ':host');
   shadow.innerHTML = `<style>${shadowCss}</style><div id="html-tweaker-guide-x"></div><div id="html-tweaker-guide-y"></div><div id="html-tweaker-highlight"><span class="html-tweaker-selected-label"></span><span class="html-tweaker-handle nw"></span><span class="html-tweaker-handle ne"></span><span class="html-tweaker-handle sw"></span><span class="html-tweaker-handle se"></span></div>
-    <div id="html-tweaker-toolbar"><strong>HTML 微调器</strong><button id="html-tweaker-edit">修改</button><button id="html-tweaker-undo" class="secondary html-tweaker-icon" hidden disabled aria-label="撤销" title="撤销（Ctrl+Z）">↶</button><button id="html-tweaker-redo" class="secondary html-tweaker-icon" hidden disabled aria-label="重做" title="重做（Ctrl+Shift+Z）">↷</button><button id="html-tweaker-save" hidden disabled>保存</button><button id="html-tweaker-export">导出副本</button><button id="html-tweaker-overwrite">覆盖原文件</button><button id="html-tweaker-cancel" class="secondary" hidden disabled>取消</button><button id="html-tweaker-more" class="secondary html-tweaker-icon" aria-label="更多操作" aria-expanded="false" title="更多操作">•••</button><div id="html-tweaker-more-menu" hidden><button id="html-tweaker-restore">恢复历史</button><button id="html-tweaker-exit">隐藏工具栏</button></div><span id="html-tweaker-status"></span></div>
-    <aside id="html-tweaker-inspector" hidden><h2>元素样式</h2><div id="html-tweaker-target"></div><div id="html-tweaker-fields"></div></aside>`;
+    <div id="html-tweaker-toolbar"><strong data-panel-drag-handle title="按住拖动工具栏">HTML 微调器</strong><button id="html-tweaker-edit">修改</button><button id="html-tweaker-undo" class="secondary html-tweaker-icon" hidden disabled aria-label="撤销" title="撤销（Ctrl+Z）">↶</button><button id="html-tweaker-redo" class="secondary html-tweaker-icon" hidden disabled aria-label="恢复" title="恢复（Ctrl+Shift+Z）">↷</button><button id="html-tweaker-save" hidden disabled>保存</button><button id="html-tweaker-export">导出副本</button><button id="html-tweaker-overwrite">覆盖原文件</button><button id="html-tweaker-cancel" class="secondary" hidden disabled>取消</button><button id="html-tweaker-more" class="secondary html-tweaker-icon" aria-label="更多操作" aria-expanded="false" title="更多操作">•••</button><div id="html-tweaker-more-menu" hidden><button id="html-tweaker-restore">恢复历史</button><button id="html-tweaker-exit">隐藏工具栏</button></div><span id="html-tweaker-status"></span></div>
+    <aside id="html-tweaker-inspector" hidden><h2 data-panel-drag-handle title="按住拖动属性面板">元素样式</h2><div id="html-tweaker-target"></div><div id="html-tweaker-fields"></div></aside>`;
   document.documentElement.appendChild(root);
 
   const highlight = shadow.querySelector<HTMLElement>('#html-tweaker-highlight')!;
   const guideX = shadow.querySelector<HTMLElement>('#html-tweaker-guide-x')!;
   const guideY = shadow.querySelector<HTMLElement>('#html-tweaker-guide-y')!;
+  const toolbar = shadow.querySelector<HTMLElement>('#html-tweaker-toolbar')!;
   const inspector = shadow.querySelector<HTMLElement>('#html-tweaker-inspector')!;
   const fields = shadow.querySelector<HTMLElement>('#html-tweaker-fields')!;
   const targetLabel = shadow.querySelector<HTMLElement>('#html-tweaker-target')!;
@@ -88,6 +89,7 @@ async function init() {
   const originalPictureSources = new WeakMap<HTMLImageElement, Array<{ element: HTMLSourceElement; src: string | null; srcset: string | null }>>();
   const touchedProperties = new Map<string, Set<string>>();
   let reapplyTimer: number | null = null;
+  let panelGroupMovedManually = false;
   const exportFolder = defaultExportFolder();
 
   function queryPageElements(selector: string): HTMLElement[] {
@@ -95,6 +97,104 @@ async function init() {
     try { return [...document.body.querySelectorAll<HTMLElement>(selector)]; }
     catch { return []; }
   }
+
+  function panelGroupSize() {
+    const margin = 8;
+    const gap = 8;
+    const toolbarHeight = toolbar.offsetHeight;
+    const inspectorVisible = !inspector.hidden;
+    if (inspectorVisible) inspector.style.maxHeight = `${Math.max(160, window.innerHeight - toolbarHeight - gap - margin * 2)}px`;
+    const inspectorWidth = inspectorVisible ? inspector.offsetWidth : 0;
+    const inspectorHeight = inspectorVisible ? inspector.offsetHeight : 0;
+    return {
+      margin,
+      gap,
+      toolbarWidth: toolbar.offsetWidth,
+      toolbarHeight,
+      inspectorVisible,
+      inspectorWidth,
+      inspectorHeight,
+      width: Math.max(toolbar.offsetWidth, inspectorWidth),
+      height: toolbarHeight + (inspectorVisible ? gap + inspectorHeight : 0)
+    };
+  }
+
+  function positionPanelGroup(left: number, top: number) {
+    const size = panelGroupSize();
+    const maxLeft = Math.max(size.margin, window.innerWidth - size.width - size.margin);
+    const maxTop = Math.max(size.margin, window.innerHeight - size.height - size.margin);
+    const groupLeft = Math.round(Math.min(Math.max(left, size.margin), maxLeft));
+    const groupTop = Math.round(Math.min(Math.max(top, size.margin), maxTop));
+    Object.assign(toolbar.style, {
+      left: `${groupLeft + size.width - size.toolbarWidth}px`,
+      top: `${groupTop}px`,
+      right: 'auto'
+    });
+    if (size.inspectorVisible) {
+      Object.assign(inspector.style, {
+        left: `${groupLeft + size.width - size.inspectorWidth}px`,
+        top: `${groupTop + size.toolbarHeight + size.gap}px`,
+        right: 'auto'
+      });
+    }
+  }
+
+  function currentPanelGroupPosition() {
+    const size = panelGroupSize();
+    const toolbarRect = toolbar.getBoundingClientRect();
+    return { left: toolbarRect.right - size.width, top: toolbarRect.top };
+  }
+
+  function enablePanelGroupDragging(handle: HTMLElement) {
+    let drag: { pointerId: number; startX: number; startY: number; left: number; top: number } | null = null;
+    handle.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      const position = currentPanelGroupPosition();
+      drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, left: position.left, top: position.top };
+      handle.setPointerCapture?.(event.pointerId);
+      toolbar.classList.add('html-tweaker-panel-dragging');
+      inspector.classList.add('html-tweaker-panel-dragging');
+      panelGroupMovedManually = true;
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    handle.addEventListener('pointermove', (event) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      positionPanelGroup(drag.left + event.clientX - drag.startX, drag.top + event.clientY - drag.startY);
+    });
+    const finish = (event: PointerEvent) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      handle.releasePointerCapture?.(event.pointerId);
+      drag = null;
+      toolbar.classList.remove('html-tweaker-panel-dragging');
+      inspector.classList.remove('html-tweaker-panel-dragging');
+    };
+    handle.addEventListener('pointerup', finish);
+    handle.addEventListener('pointercancel', finish);
+  }
+
+  function placePanelGroupAwayFromSelected() {
+    if (!selected || inspector.hidden) return;
+    if (panelGroupMovedManually) {
+      const position = currentPanelGroupPosition();
+      positionPanelGroup(position.left, position.top);
+      return;
+    }
+    const margin = 16;
+    const selectedRect = selected.getBoundingClientRect();
+    const size = panelGroupSize();
+    const leftPosition = margin;
+    const rightPosition = Math.max(margin, window.innerWidth - size.width - margin);
+    const overlapAt = (left: number) => Math.max(0, Math.min(left + size.width, selectedRect.right) - Math.max(left, selectedRect.left));
+    const leftOverlap = overlapAt(leftPosition);
+    const rightOverlap = overlapAt(rightPosition);
+    const useLeft = leftOverlap < rightOverlap
+      || (leftOverlap === rightOverlap && selectedRect.left + selectedRect.width / 2 >= window.innerWidth / 2);
+    positionPanelGroup(useLeft ? leftPosition : rightPosition, toolbar.getBoundingClientRect().top);
+  }
+
+  enablePanelGroupDragging(shadow.querySelector<HTMLElement>('#html-tweaker-toolbar [data-panel-drag-handle]')!);
+  enablePanelGroupDragging(shadow.querySelector<HTMLElement>('#html-tweaker-inspector [data-panel-drag-handle]')!);
 
   const history = await loadHistory();
   const latest = history.activeVersionId === null
@@ -127,7 +227,8 @@ async function init() {
     rules.forEach((rule) => {
       if (rule.imageSource === undefined) return;
       queryPageElements(rule.selector).forEach((element) => {
-        if (element instanceof HTMLImageElement) restoreImageSource(element);
+        const image = editableImageFor(element);
+        if (image) restoreImageSource(image);
       });
     });
     appliedProperties.clear();
@@ -141,8 +242,9 @@ async function init() {
           if (!originalMarkup.has(el)) originalMarkup.set(el, el.innerHTML);
           if (el.textContent !== rule.textContent) setElementText(el, rule.textContent);
         }
-        if (rule.imageSource !== undefined && el instanceof HTMLImageElement) {
-          setImageSource(el, rule.imageSource);
+        if (rule.imageSource !== undefined) {
+          const image = editableImageFor(el);
+          if (image) setImageSource(image, rule.imageSource);
         }
         Object.entries(rule.properties).forEach(([key, value]) => {
           if (value) setImportant(el, key.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`), value);
@@ -185,7 +287,7 @@ async function init() {
     undoStack.push(cloneRules([...rules.values()]));
     applyRules(next);
     lastUndoAction = '';
-    status.textContent = '已重做';
+    status.textContent = '已恢复';
     updateUndoButtons();
   }
 
@@ -213,7 +315,26 @@ async function init() {
   }
 
   function fingerprint(el: HTMLElement) {
-    return `${el.tagName.toLowerCase()}|${el.textContent?.trim().slice(0, 40) ?? ''}|${el.getAttribute('src') ?? ''}`;
+    const image = editableImageFor(el);
+    return `${el.tagName.toLowerCase()}|${el.textContent?.trim().slice(0, 40) ?? ''}|${image?.getAttribute('src') ?? el.getAttribute('src') ?? ''}`;
+  }
+
+  function editableImageFor(element: HTMLElement): HTMLImageElement | null {
+    if (element instanceof HTMLImageElement) return element;
+    let images: HTMLImageElement[] = [];
+    try {
+      images = [...element.querySelectorAll<HTMLImageElement>(':scope > img, :scope > picture > img')];
+      if (!images.length && element.matches('picture, figure, [data-kind="image"]')) {
+        images = [...element.querySelectorAll<HTMLImageElement>('img')];
+      }
+      if (!images.length && !element.textContent?.trim()) {
+        const nestedImages = [...element.querySelectorAll<HTMLImageElement>('img')];
+        if (nestedImages.length === 1) images = nestedImages;
+      }
+    } catch {
+      return null;
+    }
+    return images.length === 1 ? images[0] : null;
   }
 
   function selectElement(el: HTMLElement) {
@@ -235,13 +356,15 @@ async function init() {
     inspector.hidden = false;
     setResizeHandlesVisible(isResizeable(el));
     refreshInspector();
+    placePanelGroupAwayFromSelected();
     updateHighlight();
   }
 
   function updateHighlight() {
     if (!selected || !editing) { highlight.style.display = 'none'; return; }
     const rect = selected.getBoundingClientRect();
-    selectedLabel.textContent = selected.tagName.toLowerCase() + (selected.id ? `#${selected.id}` : "");
+    const image = editableImageFor(selected);
+    selectedLabel.textContent = selected.tagName.toLowerCase() + (selected.id ? `#${selected.id}` : '') + (image && image !== selected ? ' · 图片' : '');
     Object.assign(highlight.style, { display: 'block', position: 'fixed', left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px`, boxSizing: 'border-box', zIndex: '2147483647' });
   }
 
@@ -283,7 +406,8 @@ async function init() {
     if (!selected) return;
     const rule = currentRule();
     const selector = selectorFor(selected);
-    targetLabel.innerHTML = `<div>${selected.tagName.toLowerCase()}${selected.id ? `#${selected.id}` : ''}<small class="html-tweaker-scope">样式作用于整个元素</small></div><div class="html-tweaker-selection-actions"><button data-copy-styles title="复制样式（Ctrl+Shift+C）">复制</button><button data-paste-styles title="粘贴样式（Ctrl+Shift+V）" ${copiedStyles ? '' : 'disabled'}>粘贴</button></div>`;
+    const selectedImage = editableImageFor(selected);
+    targetLabel.innerHTML = `<div>${selected.tagName.toLowerCase()}${selected.id ? `#${selected.id}` : ''}${selectedImage && selectedImage !== selected ? ' · 图片容器' : ''}<small class="html-tweaker-scope">样式作用于整个元素</small></div><div class="html-tweaker-selection-actions"><button data-copy-styles title="复制样式（Ctrl+Shift+C）">复制</button><button data-paste-styles title="粘贴样式（Ctrl+Shift+V）" ${copiedStyles ? '' : 'disabled'}>粘贴</button></div>`;
     const computed = getComputedStyle(selected);
     const fieldsConfig: Array<{ key: EditableProperty; label: string; type: string; value: string; options?: string[] }> = [
       { key: 'width', label: '宽度', type: 'text', value: rule?.properties.width ?? computed.width },
@@ -295,9 +419,9 @@ async function init() {
       { key: 'borderRadius', label: '圆角', type: 'text', value: rule?.properties.borderRadius ?? computed.borderRadius },
       { key: 'transform', label: '位移', type: 'text', value: rule?.properties.transform ?? computed.transform }
     ];
-    const textEditor = selected instanceof HTMLImageElement ? '' : `<div class="html-tweaker-field-row html-tweaker-copy-row"><label class="html-tweaker-copy-label">文案<textarea data-text-content>${escapeHtml(selected.textContent ?? '')}</textarea></label><button class="html-tweaker-reset" data-reset-text aria-label="恢复本次修改前的文案" title="恢复本次修改前的文案" ${textChangedThisSession(selector) ? '' : 'disabled'}>↺</button></div>`;
-    const imageEditor = selected instanceof HTMLImageElement
-      ? `<div class="html-tweaker-image-field"><span>图片</span><div class="html-tweaker-image-actions"><button type="button" class="html-tweaker-image-button" data-choose-image>选择替换</button><input data-image-source type="file" accept="image/*" hidden><button class="html-tweaker-reset" data-reset-image aria-label="恢复本次修改前的图片" title="恢复本次修改前的图片" ${imageChangedThisSession(selector) ? '' : 'disabled'}>↺</button></div><small>支持 PNG、JPG、WebP、GIF、SVG 等浏览器可显示的图片</small></div>`
+    const textEditor = selectedImage ? '' : `<div class="html-tweaker-field-row html-tweaker-copy-row"><label class="html-tweaker-copy-label">文案<textarea data-text-content>${escapeHtml(selected.textContent ?? '')}</textarea></label><button class="html-tweaker-reset" data-reset-text aria-label="恢复本次修改前的文案" title="恢复本次修改前的文案" ${textChangedThisSession(selector) ? '' : 'disabled'}>↺</button></div>`;
+    const imageEditor = selectedImage
+      ? `<div class="html-tweaker-image-field"><span>图片</span><div class="html-tweaker-image-actions"><button type="button" class="html-tweaker-image-button" data-choose-image>替换</button><input data-image-source type="file" accept="image/*" hidden><button class="html-tweaker-reset" data-reset-image aria-label="恢复本次修改前的图片" title="恢复本次修改前的图片" ${imageChangedThisSession(selector) ? '' : 'disabled'}>↺</button></div><small>支持 PNG、JPG、WebP、GIF、SVG 等浏览器可显示的图片</small></div>`
       : '';
     fields.innerHTML = imageEditor + textEditor + fieldsConfig.map((field) => field.type === 'select'
       ? `<div class="html-tweaker-field-row"><label>${field.label}<select data-style="${field.key}">${field.options!.map((option) => `<option ${option === field.value ? 'selected' : ''}>${option}</option>`).join('')}</select></label><button class="html-tweaker-reset" data-reset-style="${field.key}" aria-label="恢复本次修改前的${field.label}" title="恢复本次修改前的${field.label}" ${propertyChangedThisSession(selector, field.key) ? '' : 'disabled'}>↺</button></div>`
@@ -333,10 +457,11 @@ async function init() {
       updateHighlight();
     });
     imageInput?.addEventListener('change', async (event) => {
-      const image = selected;
+      const imageHost = selected;
+      const image = imageHost ? editableImageFor(imageHost) : null;
       const input = event.currentTarget as HTMLInputElement;
       const file = input.files?.[0];
-      if (!(image instanceof HTMLImageElement) || !file) return;
+      if (!imageHost || !image || !file) return;
       if (file.type && !file.type.startsWith('image/')) {
         status.textContent = '请选择图片文件';
         input.value = '';
@@ -345,9 +470,9 @@ async function init() {
       try {
         status.textContent = '正在读取图片…';
         const source = await fileToDataUrl(file);
-        const selector = selectorFor(image);
+        const selector = selectorFor(imageHost);
         recordUndo(`image:${selector}`);
-        const rule = rules.get(selector) ?? { selector, fingerprint: fingerprint(image), properties: {} };
+        const rule = rules.get(selector) ?? { selector, fingerprint: fingerprint(imageHost), properties: {} };
         rule.imageSource = source;
         rules.set(selector, rule);
         setImageSource(image, source);
@@ -371,7 +496,10 @@ async function init() {
     if (!selected || !value) return;
     const selector = selectorFor(selected);
     if (shouldRecord) recordUndo(`style:${selector}:${key}`, true);
-    const rule = rules.get(selector) ?? { selector, fingerprint: fingerprint(selected), properties: {} };
+    const current = rules.get(selector);
+    const rule = current
+      ? { ...current, properties: { ...current.properties } }
+      : { selector, fingerprint: fingerprint(selected), properties: {} };
     rule.properties[key] = value;
     rules.set(selector, rule);
     const cssKey = key.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
@@ -391,7 +519,10 @@ async function init() {
     if (!propertyChangedThisSession(selector, key)) return;
     recordUndo(`reset:${selector}:${key}`);
     const before = ruleBeforeEditing(selector);
-    const rule = rules.get(selector) ?? { selector, fingerprint: fingerprint(selected), properties: {} };
+    const current = rules.get(selector);
+    const rule = current
+      ? { ...current, properties: { ...current.properties } }
+      : { selector, fingerprint: fingerprint(selected), properties: {} };
     const related: EditableProperty[] = key === 'width' ? ['width', 'maxWidth', 'flex'] : [key];
     related.forEach((property) => restoreRuleProperty(rule, before, property));
     if ((key === 'width' || key === 'height')
@@ -411,7 +542,10 @@ async function init() {
     if (!textChangedThisSession(selector)) return;
     recordUndo(`reset-text:${selector}`);
     const before = ruleBeforeEditing(selector);
-    const rule = rules.get(selector) ?? { selector, fingerprint: fingerprint(selected), properties: {} };
+    const current = rules.get(selector);
+    const rule = current
+      ? { ...current, properties: { ...current.properties } }
+      : { selector, fingerprint: fingerprint(selected), properties: {} };
     if (before?.textContent === undefined) delete rule.textContent;
     else rule.textContent = before.textContent;
     rules.set(selector, rule);
@@ -421,12 +555,18 @@ async function init() {
   }
 
   function resetImage() {
-    if (!(selected instanceof HTMLImageElement)) return;
+    if (!selected) return;
+    const image = editableImageFor(selected);
+    if (!image) return;
     const selector = selectorFor(selected);
     if (!imageChangedThisSession(selector)) return;
     recordUndo(`reset-image:${selector}`);
     const before = ruleBeforeEditing(selector);
-    const rule = rules.get(selector) ?? { selector, fingerprint: fingerprint(selected), properties: {} };
+    const current = rules.get(selector);
+    const rule = current
+      ? { ...current, properties: { ...current.properties } }
+      : { selector, fingerprint: fingerprint(selected), properties: {} };
+    restoreImageSource(image);
     if (before?.imageSource === undefined) delete rule.imageSource;
     else rule.imageSource = before.imageSource;
     rules.set(selector, rule);
@@ -550,7 +690,7 @@ async function init() {
     if (root.contains(target)) return;
     event.preventDefault();
     event.stopPropagation();
-    selectElement(target.closest<HTMLElement>('img,button,a,input,textarea,select,svg,canvas,div,section,article,header,footer,p,span,h1,h2,h3,h4,h5,h6') ?? target);
+    selectElement(target.closest<HTMLElement>('img,picture,figure,[data-kind="image"],button,a,input,textarea,select,svg,canvas,div,section,article,header,footer,p,span,h1,h2,h3,h4,h5,h6') ?? target);
   }, true);
 
   document.addEventListener('keydown', (event) => {
@@ -738,7 +878,8 @@ async function init() {
   function needsStyleReapply(element: HTMLElement) {
     return [...rules.values()].some((rule) => {
       if (!element.matches(rule.selector)) return false;
-      if (rule.imageSource !== undefined && element instanceof HTMLImageElement && element.getAttribute('src') !== rule.imageSource) return true;
+      const image = editableImageFor(element);
+      if (rule.imageSource !== undefined && image && image.getAttribute('src') !== rule.imageSource) return true;
       return Object.entries(rule.properties).some(([key, value]) => {
         if (!value) return false;
         const property = key.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`);
@@ -855,27 +996,48 @@ async function init() {
       throw new Error('当前浏览器不支持覆盖本地文件，请使用“导出副本”');
     }
     const filename = sourceFilename();
+    // Start reading before the picker opens. Some browser/OS combinations can briefly
+    // expose the selected save target as empty after the picker returns.
+    const sourceResultPromise = readCurrentPageSource().then(
+      (source) => ({ source, error: undefined }),
+      (error: unknown) => ({ source: undefined, error })
+    );
     const handle = await window.showSaveFilePicker({
       suggestedName: filename,
       types: [{ description: 'HTML 文件', accept: { 'text/html': ['.html', '.htm'] } }]
     });
     status.textContent = '正在校验源文件…';
-    const [source, selectedFile] = await Promise.all([readCurrentPageSource(), handle.getFile()]);
+    const sourceResult = await sourceResultPromise;
+    if (sourceResult.error || sourceResult.source === undefined) throw sourceResult.error ?? new Error('无法读取当前 HTML 源码');
+    const source = sourceResult.source;
+    assertUsableHtmlSource(source);
     if (handle.name.toLocaleLowerCase() !== filename.toLocaleLowerCase()) {
       throw new Error(`请选择当前页面的源文件 ${filename}，已停止覆盖`);
     }
-    if (await selectedFile.text() !== source) {
+    const selectedSource = await (await handle.getFile()).text();
+    if (selectedSource !== source && selectedSource.trim()) {
       throw new Error('所选文件与当前打开的源 HTML 内容不一致，已停止覆盖');
     }
     const updated = updatePersistedBlock(source, outputRules);
+    assertUsableHtmlSource(updated);
+    const recoverySource = selectedSource.trim() ? selectedSource : source;
     const writable = await handle.createWritable();
     try {
       status.textContent = '正在覆盖原文件…';
       await writable.write(new Blob([updated], { type: 'text/html;charset=utf-8' }));
       await writable.close();
+      const written = await (await handle.getFile()).text();
+      if (written !== updated) throw new Error('写入结果不完整');
     } catch (error) {
       await writable.abort?.().catch(() => undefined);
-      throw error;
+      try {
+        const recovery = await handle.createWritable();
+        await recovery.write(new Blob([recoverySource], { type: 'text/html;charset=utf-8' }));
+        await recovery.close();
+      } catch (recoveryError) {
+        console.error('[HTML Visual Tweaker] unable to restore source HTML after failed overwrite', recoveryError);
+      }
+      throw new Error(`覆盖失败，已尝试恢复原文件：${error instanceof Error ? error.message : '写入异常'}`);
     }
     status.textContent = `已覆盖原文件：${filename}`;
   }
@@ -1019,6 +1181,7 @@ function fileToDataUrl(file: File): Promise<string> {
 
 async function exportRulesAsPackage(rules: StyleRule[], exportFolder: string): Promise<{ filename: string; fileCount: number; warningCount: number }> {
   const source = await readCurrentPageSource();
+  assertUsableHtmlSource(source);
   const prepared = prepareExportSource(source);
   const updated = updatePersistedBlock(prepared.source, rules);
   const filename = sourceFilename();
@@ -1082,8 +1245,7 @@ function sanitizePathSegment(value: string): string {
 }
 
 function updatePersistedBlock(source: string, rules: StyleRule[]): string {
-  const markerPattern = /\s*<!-- HTML_VISUAL_TWEAKER:START -->[\s\S]*?<!-- HTML_VISUAL_TWEAKER:END -->\s*/g;
-  const withoutPrevious = source.replace(markerPattern, '\n');
+  const withoutPrevious = stripPersistedBlock(source);
   if (!rules.length) return withoutPrevious;
   const block = buildPersistedBlock(rules);
   if (/<\/head\s*>/i.test(withoutPrevious)) {
@@ -1092,10 +1254,21 @@ function updatePersistedBlock(source: string, rules: StyleRule[]): string {
   return `${block}\n${withoutPrevious}`;
 }
 
+function stripPersistedBlock(source: string): string {
+  return source.replace(/\s*<!-- HTML_VISUAL_TWEAKER:START -->[\s\S]*?<!-- HTML_VISUAL_TWEAKER:END -->\s*/g, '\n');
+}
+
+function assertUsableHtmlSource(source: string): void {
+  const originalPage = stripPersistedBlock(source).trim();
+  if (originalPage.length < 32 || !/<(?:!doctype|html|head|body|main|section|article|div|svg|canvas)\b/i.test(originalPage)) {
+    throw new Error('源 HTML 内容为空或不完整，已停止写入');
+  }
+}
+
 function buildPersistedBlock(rules: StyleRule[]): string {
   const css = buildPersistedCss(rules);
   const json = serializePersistedRules(rules);
-  const runtime = `(()=>{const active=()=>!document.documentElement.hasAttribute('${EXTENSION_ACTIVE_ATTRIBUTE}'),n=document.getElementById('${PERSISTED_RULES_ID}');if(!n||!active())return;let r=[];const u=()=>{try{r=JSON.parse(n.textContent||'[]')}catch{r=[]}};const t=(e,v)=>{if(!e.children.length){e.textContent=v;return}const a=[],w=e.ownerDocument.createTreeWalker(e,NodeFilter.SHOW_TEXT);let x;while(x=w.nextNode())a.push(x);if(!a.length){e.textContent=v;return}const o=e.textContent||'';let p=0;while(p<o.length&&p<v.length&&o[p]===v[p])p++;let s=0;while(s<o.length-p&&s<v.length-p&&o[o.length-s-1]===v[v.length-s-1])s++;const z=o.length-s,c=v.slice(p,v.length-s);let d=0,f=-1,l=-1;a.forEach((q,i)=>{const b=d,h=d+q.data.length;if((p===z?p>=b&&p<=h:h>p&&b<z)){if(f<0)f=i;l=i}d=h});if(f<0){d=0;for(const q of a){if(p<=d+q.data.length){const i=Math.max(0,p-d);q.data=q.data.slice(0,i)+c+q.data.slice(i);return}d+=q.data.length}a[a.length-1].data+=c;return}d=0;a.forEach((q,i)=>{if(i<f||i>l){d+=q.data.length;return}const b=d,h=Math.max(0,p-b),m=Math.max(0,b+q.data.length-z);q.data=q.data.slice(0,h)+(i===f?c:'')+(m?q.data.slice(q.data.length-m):'');d=b+q.data.length})};const a=()=>{if(!active())return;u();r.forEach(q=>{let e=[];try{e=document.querySelectorAll(q.selector)}catch{return}e.forEach(v=>{if(q.textContent!==undefined&&v.textContent!==q.textContent)t(v,q.textContent);if(q.imageSource!==undefined&&v instanceof HTMLImageElement){if(v.getAttribute('src')!==q.imageSource)v.setAttribute('src',q.imageSource);v.removeAttribute('srcset');const g=v.closest('picture');if(g)g.querySelectorAll('source').forEach(s=>{s.removeAttribute('src');s.removeAttribute('srcset')})}})})};new MutationObserver(a).observe(document.documentElement,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['src','srcset']});a();document.addEventListener('DOMContentLoaded',a,{once:true})})();`;
+  const runtime = `(()=>{const active=()=>!document.documentElement.hasAttribute('${EXTENSION_ACTIVE_ATTRIBUTE}'),n=document.getElementById('${PERSISTED_RULES_ID}');if(!n||!active())return;let r=[];const u=()=>{try{r=JSON.parse(n.textContent||'[]')}catch{r=[]}};const i=e=>{if(e instanceof HTMLImageElement)return e;let m=[];try{m=[...e.querySelectorAll(':scope > img, :scope > picture > img')];if(!m.length&&e.matches('picture, figure, [data-kind="image"]'))m=[...e.querySelectorAll('img')]}catch{return null}return m.length===1?m[0]:null};const t=(e,v)=>{if(!e.children.length){e.textContent=v;return}const a=[],w=e.ownerDocument.createTreeWalker(e,NodeFilter.SHOW_TEXT);let x;while(x=w.nextNode())a.push(x);if(!a.length){e.textContent=v;return}const o=e.textContent||'';let p=0;while(p<o.length&&p<v.length&&o[p]===v[p])p++;let s=0;while(s<o.length-p&&s<v.length-p&&o[o.length-s-1]===v[v.length-s-1])s++;const z=o.length-s,c=v.slice(p,v.length-s);let d=0,f=-1,l=-1;a.forEach((q,i)=>{const b=d,h=d+q.data.length;if((p===z?p>=b&&p<=h:h>p&&b<z)){if(f<0)f=i;l=i}d=h});if(f<0){d=0;for(const q of a){if(p<=d+q.data.length){const i=Math.max(0,p-d);q.data=q.data.slice(0,i)+c+q.data.slice(i);return}d+=q.data.length}a[a.length-1].data+=c;return}d=0;a.forEach((q,i)=>{if(i<f||i>l){d+=q.data.length;return}const b=d,h=Math.max(0,p-b),m=Math.max(0,b+q.data.length-z);q.data=q.data.slice(0,h)+(i===f?c:'')+(m?q.data.slice(q.data.length-m):'');d=b+q.data.length})};const a=()=>{if(!active())return;u();r.forEach(q=>{let e=[];try{e=document.querySelectorAll(q.selector)}catch{return}e.forEach(v=>{if(q.textContent!==undefined&&v.textContent!==q.textContent)t(v,q.textContent);if(q.imageSource!==undefined){const g=i(v);if(g){if(g.getAttribute('src')!==q.imageSource)g.setAttribute('src',q.imageSource);g.removeAttribute('srcset');const p=g.closest('picture');if(p)p.querySelectorAll('source').forEach(s=>{s.removeAttribute('src');s.removeAttribute('srcset')})}}})})};new MutationObserver(a).observe(document.documentElement,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['src','srcset']});a();document.addEventListener('DOMContentLoaded',a,{once:true})})();`;
   return `${PERSISTED_START}\n<style id="html-tweaker-persisted-styles">\n${css}\n</style>\n<script type="application/json" id="${PERSISTED_RULES_ID}">${json}</script>\n<script id="html-tweaker-persisted-runtime">${runtime}</script>\n${PERSISTED_END}`;
 }
 

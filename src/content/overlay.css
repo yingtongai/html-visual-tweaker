@@ -23,6 +23,9 @@
 #html-tweaker-inspector .html-tweaker-image-actions{display:flex;align-items:center;gap:5px}
 #html-tweaker-root [hidden]{display:none!important}
 #html-tweaker-toolbar strong{white-space:nowrap}
+#html-tweaker-toolbar [data-panel-drag-handle],#html-tweaker-inspector [data-panel-drag-handle]{cursor:grab;touch-action:none;user-select:none}
+#html-tweaker-inspector [data-panel-drag-handle]{padding:3px 0 7px}
+#html-tweaker-toolbar.html-tweaker-panel-dragging [data-panel-drag-handle],#html-tweaker-inspector.html-tweaker-panel-dragging [data-panel-drag-handle]{cursor:grabbing}
 #html-tweaker-toolbar .html-tweaker-icon{min-width:32px;padding:5px 8px;font-size:16px;line-height:1}
 #html-tweaker-toolbar #html-tweaker-more-menu{position:absolute;top:calc(100% + 7px);right:0;display:grid;min-width:132px;padding:6px;background:#17202a;border-radius:7px;box-shadow:0 10px 28px #0004}
 #html-tweaker-toolbar #html-tweaker-more-menu button{width:100%;padding:8px 10px;background:transparent;color:#fff;text-align:left;white-space:nowrap}
