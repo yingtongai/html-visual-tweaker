@@ -6,6 +6,7 @@ export interface StyleRule {
   properties: Partial<Record<EditableProperty, string>>;
   textContent?: string;
   imageSource?: string;
+  imageFilename?: string;
 }
 
 export interface SavedVersion {

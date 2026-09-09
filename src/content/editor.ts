@@ -5,11 +5,17 @@ import { EditableProperty, SavedVersion, StyleRule } from '../shared/types';
 declare global {
   interface Window {
     __htmlTweakerLoaded?: boolean;
-    showSaveFilePicker?: (options?: {
-      suggestedName?: string;
-      types?: Array<{ description?: string; accept: Record<string, string[]> }>;
-    }) => Promise<HtmlFileHandle>;
+    showDirectoryPicker?: (options?: {
+      id?: string;
+      mode?: 'read' | 'readwrite';
+    }) => Promise<HtmlDirectoryHandle>;
   }
+}
+
+interface HtmlDirectoryHandle {
+  name: string;
+  getFileHandle(name: string, options?: { create?: boolean }): Promise<HtmlFileHandle>;
+  getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<HtmlDirectoryHandle>;
 }
 
 interface HtmlFileHandle {
@@ -487,6 +493,7 @@ async function init() {
         recordUndo(`image:${selector}`);
         const rule = rules.get(selector) ?? { selector, fingerprint: fingerprint(imageHost), properties: {} };
         rule.imageSource = source;
+        rule.imageFilename = file.name;
         rules.set(selector, rule);
         setImageSource(image, source);
         image.addEventListener('load', () => {
@@ -580,8 +587,13 @@ async function init() {
       ? { ...current, properties: { ...current.properties } }
       : { selector, fingerprint: fingerprint(selected), properties: {} };
     restoreImageSource(image);
-    if (before?.imageSource === undefined) delete rule.imageSource;
-    else rule.imageSource = before.imageSource;
+    if (before?.imageSource === undefined) {
+      delete rule.imageSource;
+      delete rule.imageFilename;
+    } else {
+      rule.imageSource = before.imageSource;
+      rule.imageFilename = before.imageFilename;
+    }
     rules.set(selector, rule);
     pruneRule(selector);
     applyRules(cloneRules([...rules.values()]));
@@ -1005,35 +1017,40 @@ async function init() {
   }
 
   async function overwriteOriginalHtml(outputRules: StyleRule[]): Promise<void> {
-    if (typeof window.showSaveFilePicker !== 'function') {
+    if (typeof window.showDirectoryPicker !== 'function') {
       throw new Error('当前浏览器不支持覆盖本地文件，请使用“导出副本”');
     }
     const filename = sourceFilename();
-    // Start reading before the picker opens. Some browser/OS combinations can briefly
-    // expose the selected save target as empty after the picker returns.
     const sourceResultPromise = readCurrentPageSource().then(
       (source) => ({ source, error: undefined }),
       (error: unknown) => ({ source: undefined, error })
     );
-    const handle = await window.showSaveFilePicker({
-      suggestedName: filename,
-      types: [{ description: 'HTML 文件', accept: { 'text/html': ['.html', '.htm'] } }]
+    const directoryHandle = await window.showDirectoryPicker({
+      id: 'html-tweaker-source-folder',
+      mode: 'readwrite'
     });
     status.textContent = '正在校验源文件…';
     const sourceResult = await sourceResultPromise;
     if (sourceResult.error || sourceResult.source === undefined) throw sourceResult.error ?? new Error('无法读取当前 HTML 源码');
     const source = sourceResult.source;
     assertUsableHtmlSource(source);
-    if (handle.name.toLocaleLowerCase() !== filename.toLocaleLowerCase()) {
-      throw new Error(`请选择当前页面的源文件 ${filename}，已停止覆盖`);
+    let handle: HtmlFileHandle;
+    try {
+      handle = await directoryHandle.getFileHandle(filename);
+    } catch {
+      throw new Error(`所选文件夹中没有 ${filename}，请选择当前 HTML 所在文件夹`);
     }
     const selectedSource = await (await handle.getFile()).text();
-    if (selectedSource !== source && selectedSource.trim()) {
-      throw new Error('所选文件与当前打开的源 HTML 内容不一致，已停止覆盖');
+    if (selectedSource !== source) {
+      throw new Error(`所选文件夹中的 ${filename} 与当前页面不一致，已停止覆盖`);
     }
-    const updated = updatePersistedBlock(source, outputRules);
+    const packaged = externalizeReplacementImages(outputRules, filename);
+    if (packaged.assets.length) {
+      status.textContent = '正在写入替换图片…';
+      await writeGeneratedAssets(directoryHandle, packaged.assets);
+    }
+    const updated = updatePersistedBlock(source, packaged.rules);
     assertUsableHtmlSource(updated);
-    const recoverySource = selectedSource.trim() ? selectedSource : source;
     const writable = await handle.createWritable();
     try {
       status.textContent = '正在覆盖原文件…';
@@ -1045,14 +1062,16 @@ async function init() {
       await writable.abort?.().catch(() => undefined);
       try {
         const recovery = await handle.createWritable();
-        await recovery.write(new Blob([recoverySource], { type: 'text/html;charset=utf-8' }));
+        await recovery.write(new Blob([selectedSource], { type: 'text/html;charset=utf-8' }));
         await recovery.close();
       } catch (recoveryError) {
         console.error('[HTML Visual Tweaker] unable to restore source HTML after failed overwrite', recoveryError);
       }
       throw new Error(`覆盖失败，已尝试恢复原文件：${error instanceof Error ? error.message : '写入异常'}`);
     }
-    status.textContent = `已覆盖原文件：${filename}`;
+    status.textContent = packaged.assets.length
+      ? `已覆盖原文件：${filename}，并写入 ${packaged.assets.length} 张替换图片`
+      : `已覆盖原文件：${filename}`;
   }
 
   async function openRestoreModal() {
@@ -1207,19 +1226,22 @@ async function exportRulesAsPackage(rules: StyleRule[], exportFolder: string): P
   const source = await readCurrentPageSource();
   assertUsableHtmlSource(source);
   const prepared = prepareExportSource(source);
-  const updated = updatePersistedBlock(prepared.source, rules);
   const filename = sourceFilename();
   if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+    const packaged = externalizeReplacementImages(rules, filename);
+    const updated = updatePersistedBlock(prepared.source, packaged.rules);
     const result = await chrome.runtime.sendMessage({
       type: 'export-package',
       content: updated,
       filename,
       exportFolder,
-      assetRootUrl: prepared.assetRootUrl
+      assetRootUrl: prepared.assetRootUrl,
+      generatedAssets: packaged.assets
     }) as { ok?: boolean; fileCount?: number; warningCount?: number; error?: string } | undefined;
     if (!result?.ok) throw new Error(result?.error ?? '浏览器导出失败');
     return { filename, fileCount: result.fileCount ?? 1, warningCount: result.warningCount ?? 0 };
   } else {
+    const updated = updatePersistedBlock(prepared.source, rules);
     const url = URL.createObjectURL(new Blob([updated], { type: 'text/html;charset=utf-8' }));
     const link = document.createElement('a');
     link.href = url;
@@ -1228,6 +1250,96 @@ async function exportRulesAsPackage(rules: StyleRule[], exportFolder: string): P
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     return { filename, fileCount: 1, warningCount: 0 };
   }
+}
+
+function externalizeReplacementImages(rules: StyleRule[], filename: string): {
+  rules: StyleRule[];
+  assets: Array<{ relativePath: string; dataUrl: string }>;
+} {
+  const assets: Array<{ relativePath: string; dataUrl: string }> = [];
+  const pathsBySource = new Map<string, string>();
+  const usedFilenames = new Set<string>();
+  const fileStem = sanitizePathSegment(filename.replace(/\.[^.]+$/, ''));
+  const outputRules = cloneRules(rules).map((rule) => {
+    if (!rule.imageSource?.startsWith('data:image/')) return rule;
+    let relativePath = pathsBySource.get(rule.imageSource);
+    if (!relativePath) {
+      const extension = imageExtensionFromDataUrl(rule.imageSource);
+      const preferredFilename = rule.imageFilename
+        ? sanitizeAssetFilename(rule.imageFilename, extension)
+        : `${fileStem}-replaced-image-${assets.length + 1}.${extension}`;
+      const assetFilename = uniqueAssetFilename(preferredFilename, usedFilenames);
+      relativePath = `html-tweaker-assets/${assetFilename}`;
+      pathsBySource.set(rule.imageSource, relativePath);
+      assets.push({ relativePath, dataUrl: rule.imageSource });
+    }
+    return { ...rule, imageSource: relativePath };
+  });
+  return { rules: outputRules, assets };
+}
+
+function sanitizeAssetFilename(value: string, fallbackExtension: string): string {
+  let filename = value.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/g, '').trim();
+  if (!filename) filename = `replaced-image.${fallbackExtension}`;
+  if (!/\.[a-z0-9]+$/i.test(filename)) filename += `.${fallbackExtension}`;
+  return filename;
+}
+
+function uniqueAssetFilename(preferred: string, used: Set<string>): string {
+  let candidate = preferred;
+  let counter = 2;
+  const extensionIndex = preferred.lastIndexOf('.');
+  const stem = extensionIndex > 0 ? preferred.slice(0, extensionIndex) : preferred;
+  const extension = extensionIndex > 0 ? preferred.slice(extensionIndex) : '';
+  while (used.has(candidate.toLocaleLowerCase())) candidate = `${stem}-${counter++}${extension}`;
+  used.add(candidate.toLocaleLowerCase());
+  return candidate;
+}
+
+async function writeGeneratedAssets(
+  root: HtmlDirectoryHandle,
+  assets: Array<{ relativePath: string; dataUrl: string }>
+): Promise<void> {
+  for (const asset of assets) {
+    const parts = asset.relativePath.split('/').filter(Boolean);
+    const filename = parts.pop();
+    if (!filename || !parts.length) throw new Error('替换图片路径无效');
+    let directory = root;
+    for (const part of parts) directory = await directory.getDirectoryHandle(part, { create: true });
+    const file = await directory.getFileHandle(filename, { create: true });
+    const blob = await dataUrlToBlob(asset.dataUrl);
+    const writable = await file.createWritable();
+    try {
+      await writable.write(blob);
+      await writable.close();
+      if ((await file.getFile()).size !== blob.size) throw new Error('替换图片写入不完整');
+    } catch (error) {
+      await writable.abort?.().catch(() => undefined);
+      throw error;
+    }
+  }
+}
+
+async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
+  const response = await fetch(dataUrl);
+  if (!response.ok) throw new Error('无法读取替换图片数据');
+  return response.blob();
+}
+
+function imageExtensionFromDataUrl(dataUrl: string): string {
+  const mimeType = dataUrl.match(/^data:(image\/[a-z0-9.+-]+)/i)?.[1].toLowerCase();
+  const extensions: Record<string, string> = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'image/gif': 'gif',
+    'image/svg+xml': 'svg',
+    'image/avif': 'avif',
+    'image/bmp': 'bmp',
+    'image/x-icon': 'ico',
+    'image/vnd.microsoft.icon': 'ico'
+  };
+  return mimeType ? extensions[mimeType] ?? 'img' : 'img';
 }
 
 async function readCurrentPageSource(): Promise<string> {

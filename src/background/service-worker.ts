@@ -22,8 +22,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     && typeof message.filename === 'string'
     && typeof message.exportFolder === 'string'
     && typeof message.assetRootUrl === 'string'
+    && (message.generatedAssets === undefined || Array.isArray(message.generatedAssets))
   ) {
-    void exportPackage(message.content, message.filename, message.exportFolder, message.assetRootUrl)
+    void exportPackage(message.content, message.filename, message.exportFolder, message.assetRootUrl, message.generatedAssets ?? [])
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : '浏览器导出失败' }));
     return true;
@@ -43,7 +44,8 @@ async function exportPackage(
   content: string,
   filename: string,
   exportFolder: string,
-  assetRootUrl: string
+  assetRootUrl: string,
+  generatedAssets: Array<{ relativePath: string; dataUrl: string }>
 ): Promise<{ fileCount: number; warningCount: number }> {
   const folder = normalizeDownloadFolder(exportFolder);
   const safeFilename = sanitizePathSegment(filename);
@@ -52,8 +54,24 @@ async function exportPackage(
   const documentBaseUrl = readDocumentBaseUrl(content, pageUrl);
   const pending = extractReferences(content, documentBaseUrl);
   const queued = new Set(pending.map(fileUrlKey));
+  const generatedPaths = new Set<string>();
   let fileCount = 0;
   let warningCount = 0;
+
+  for (const asset of generatedAssets) {
+    try {
+      if (!asset || typeof asset.relativePath !== 'string' || typeof asset.dataUrl !== 'string') throw new Error('替换图片数据不完整');
+      if (!/^data:image\/[a-z0-9.+-]+(?:;[^,]*)?,/i.test(asset.dataUrl)) throw new Error('替换图片格式无效');
+      const relativePath = normalizeDownloadFolder(asset.relativePath);
+      if (generatedPaths.has(relativePath.toLocaleLowerCase())) continue;
+      generatedPaths.add(relativePath.toLocaleLowerCase());
+      await downloadDataUrl(asset.dataUrl, `${folder}/${relativePath}`);
+      fileCount += 1;
+    } catch (error) {
+      warningCount += 1;
+      console.warn('[HTML Visual Tweaker] unable to export replacement image', asset?.relativePath, error);
+    }
+  }
 
   while (pending.length) {
     if (queued.size > 500) {
@@ -66,6 +84,7 @@ async function exportPackage(
       if (!relativePath) warningCount += 1;
       continue;
     }
+    if (generatedPaths.has(relativePath.toLocaleLowerCase())) continue;
     try {
       const response = await fetch(resourceUrl.href, { cache: 'no-store' });
       if (!response.ok) throw new Error(String(response.status));
@@ -103,6 +122,7 @@ function extractReferences(source: string, baseUrl: URL): URL[] {
   const cssImportPattern = /@import\s+(?:url\(\s*)?(["'])(.*?)\1/gi;
   const modulePattern = /\b(?:import|export)\s+(?:[^"']*?\sfrom\s*)?(["'])(.*?)\1/g;
   const dynamicImportPattern = /\bimport\s*\(\s*(["'])(.*?)\1\s*\)/g;
+  const persistedImagePattern = /"imageSource"\s*:\s*"([^"\\]+)"/g;
   let match: RegExpExecArray | null;
 
   while ((match = attributePattern.exec(source))) rawReferences.add(match[2]);
@@ -113,6 +133,7 @@ function extractReferences(source: string, baseUrl: URL): URL[] {
   while ((match = cssImportPattern.exec(source))) rawReferences.add(match[2]);
   while ((match = modulePattern.exec(source))) rawReferences.add(match[2]);
   while ((match = dynamicImportPattern.exec(source))) rawReferences.add(match[2]);
+  while ((match = persistedImagePattern.exec(source))) rawReferences.add(match[1]);
 
   const urls: URL[] = [];
   for (const reference of rawReferences) {
@@ -208,4 +229,8 @@ async function downloadBytes(bytes: Uint8Array, mimeType: string, filename: stri
   }
   const url = `data:${mimeType};base64,${btoa(binaryChunks.join(''))}`;
   await chrome.downloads.download({ url, filename, saveAs: false, conflictAction: 'overwrite' });
+}
+
+async function downloadDataUrl(dataUrl: string, filename: string): Promise<void> {
+  await chrome.downloads.download({ url: dataUrl, filename, saveAs: false, conflictAction: 'overwrite' });
 }
