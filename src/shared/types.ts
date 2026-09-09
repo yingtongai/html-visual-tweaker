@@ -13,12 +13,14 @@ export interface SavedVersion {
   createdAt: number;
   title: string;
   rules: StyleRule[];
+  documentRevision?: string;
 }
 
 export interface PageHistory {
   url: string;
   versions: SavedVersion[];
   activeVersionId?: string | null;
+  documentRevision?: string;
 }
 
 export const HISTORY_LIMIT = 5;

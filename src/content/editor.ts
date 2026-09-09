@@ -1,5 +1,5 @@
 import cssText from './overlay.css?inline';
-import { loadHistory, saveVersion, setActiveVersion } from '../storage/history';
+import { loadHistory, saveHistory, saveVersion, setActiveVersion } from '../storage/history';
 import { EditableProperty, SavedVersion, StyleRule } from '../shared/types';
 
 declare global {
@@ -197,10 +197,23 @@ async function init() {
   enablePanelGroupDragging(shadow.querySelector<HTMLElement>('#html-tweaker-inspector [data-panel-drag-handle]')!);
 
   const history = await loadHistory();
+  await waitForPersistedMetadata();
+  const persistedRules = readPersistedRules();
+  const documentRevision = readPersistedRevision();
   const latest = history.activeVersionId === null
     ? undefined
     : history.versions.find((version) => version.id === history.activeVersionId) ?? history.versions[0];
-  const initialRules = latest?.rules ?? readPersistedRules();
+  const savedVersionMatchesDocument = !documentRevision || latest?.documentRevision === documentRevision;
+  const documentChanged = Boolean(documentRevision && (
+    history.documentRevision !== documentRevision
+    || (latest && !savedVersionMatchesDocument)
+  ));
+  if (documentChanged) {
+    history.documentRevision = documentRevision;
+    history.activeVersionId = null;
+    await saveHistory(history);
+  }
+  const initialRules = savedVersionMatchesDocument ? latest?.rules ?? persistedRules : persistedRules;
   if (initialRules.length) {
     await waitForRuleTargets(initialRules);
     applyRules(initialRules);
@@ -690,7 +703,7 @@ async function init() {
     if (root.contains(target)) return;
     event.preventDefault();
     event.stopPropagation();
-    selectElement(target.closest<HTMLElement>('img,picture,figure,[data-kind="image"],button,a,input,textarea,select,svg,canvas,div,section,article,header,footer,p,span,h1,h2,h3,h4,h5,h6') ?? target);
+    selectElement(target.closest<HTMLElement>('img,picture,figure,figcaption,[data-kind="image"],button,a,input,textarea,select,label,svg,canvas,div,section,article,header,footer,p,span,em,strong,b,i,u,s,small,mark,code,q,cite,time,blockquote,ul,ol,li,dl,dt,dd,table,thead,tbody,tfoot,tr,th,td,h1,h2,h3,h4,h5,h6') ?? target);
   }, true);
 
   document.addEventListener('keydown', (event) => {
@@ -921,7 +934,7 @@ async function init() {
     try {
       status.textContent = '正在保存…';
       const nextRules = [...rules.values()];
-      const version = await saveVersion(nextRules, document.title || location.hostname);
+      const version = await saveVersion(nextRules, document.title || location.hostname, location.href, readPersistedRevision());
       status.textContent = `已保存 ${new Date(version.createdAt).toLocaleTimeString()}`;
       setEditing(false);
       setTimeout(() => { status.textContent = ''; }, 2500);
@@ -1072,6 +1085,10 @@ async function init() {
     }
   }
 
+  function readPersistedRevision(): string | undefined {
+    return document.getElementById(PERSISTED_RULES_ID)?.dataset.documentRevision || undefined;
+  }
+
   setEditing(false);
   setUiVisible(true);
 }
@@ -1167,6 +1184,13 @@ function waitForRuleTargets(rules: StyleRule[]): Promise<void> {
     };
     observer.observe(document.documentElement, { childList: true, subtree: true });
     document.addEventListener('DOMContentLoaded', finish, { once: true });
+  });
+}
+
+function waitForPersistedMetadata(): Promise<void> {
+  if (document.readyState !== 'loading') return Promise.resolve();
+  return new Promise((resolve) => {
+    document.addEventListener('DOMContentLoaded', () => resolve(), { once: true });
   });
 }
 
@@ -1268,8 +1292,9 @@ function assertUsableHtmlSource(source: string): void {
 function buildPersistedBlock(rules: StyleRule[]): string {
   const css = buildPersistedCss(rules);
   const json = serializePersistedRules(rules);
+  const documentRevision = crypto.randomUUID();
   const runtime = `(()=>{const active=()=>!document.documentElement.hasAttribute('${EXTENSION_ACTIVE_ATTRIBUTE}'),n=document.getElementById('${PERSISTED_RULES_ID}');if(!n||!active())return;let r=[];const u=()=>{try{r=JSON.parse(n.textContent||'[]')}catch{r=[]}};const i=e=>{if(e instanceof HTMLImageElement)return e;let m=[];try{m=[...e.querySelectorAll(':scope > img, :scope > picture > img')];if(!m.length&&e.matches('picture, figure, [data-kind="image"]'))m=[...e.querySelectorAll('img')]}catch{return null}return m.length===1?m[0]:null};const t=(e,v)=>{if(!e.children.length){e.textContent=v;return}const a=[],w=e.ownerDocument.createTreeWalker(e,NodeFilter.SHOW_TEXT);let x;while(x=w.nextNode())a.push(x);if(!a.length){e.textContent=v;return}const o=e.textContent||'';let p=0;while(p<o.length&&p<v.length&&o[p]===v[p])p++;let s=0;while(s<o.length-p&&s<v.length-p&&o[o.length-s-1]===v[v.length-s-1])s++;const z=o.length-s,c=v.slice(p,v.length-s);let d=0,f=-1,l=-1;a.forEach((q,i)=>{const b=d,h=d+q.data.length;if((p===z?p>=b&&p<=h:h>p&&b<z)){if(f<0)f=i;l=i}d=h});if(f<0){d=0;for(const q of a){if(p<=d+q.data.length){const i=Math.max(0,p-d);q.data=q.data.slice(0,i)+c+q.data.slice(i);return}d+=q.data.length}a[a.length-1].data+=c;return}d=0;a.forEach((q,i)=>{if(i<f||i>l){d+=q.data.length;return}const b=d,h=Math.max(0,p-b),m=Math.max(0,b+q.data.length-z);q.data=q.data.slice(0,h)+(i===f?c:'')+(m?q.data.slice(q.data.length-m):'');d=b+q.data.length})};const a=()=>{if(!active())return;u();r.forEach(q=>{let e=[];try{e=document.querySelectorAll(q.selector)}catch{return}e.forEach(v=>{if(q.textContent!==undefined&&v.textContent!==q.textContent)t(v,q.textContent);if(q.imageSource!==undefined){const g=i(v);if(g){if(g.getAttribute('src')!==q.imageSource)g.setAttribute('src',q.imageSource);g.removeAttribute('srcset');const p=g.closest('picture');if(p)p.querySelectorAll('source').forEach(s=>{s.removeAttribute('src');s.removeAttribute('srcset')})}}})})};new MutationObserver(a).observe(document.documentElement,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['src','srcset']});a();document.addEventListener('DOMContentLoaded',a,{once:true})})();`;
-  return `${PERSISTED_START}\n<style id="html-tweaker-persisted-styles">\n${css}\n</style>\n<script type="application/json" id="${PERSISTED_RULES_ID}">${json}</script>\n<script id="html-tweaker-persisted-runtime">${runtime}</script>\n${PERSISTED_END}`;
+  return `${PERSISTED_START}\n<style id="html-tweaker-persisted-styles">\n${css}\n</style>\n<script type="application/json" id="${PERSISTED_RULES_ID}" data-document-revision="${documentRevision}">${json}</script>\n<script id="html-tweaker-persisted-runtime">${runtime}</script>\n${PERSISTED_END}`;
 }
 
 function buildPersistedCss(rules: StyleRule[]): string {

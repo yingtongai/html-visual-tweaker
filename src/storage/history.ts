@@ -16,9 +16,9 @@ export async function loadHistory(url = location.href): Promise<PageHistory> {
   }
 }
 
-export async function saveVersion(rules: StyleRule[], title: string, url = location.href): Promise<SavedVersion> {
+export async function saveVersion(rules: StyleRule[], title: string, url = location.href, documentRevision?: string): Promise<SavedVersion> {
   const history = await loadHistory(url);
-  const version: SavedVersion = { id: crypto.randomUUID(), createdAt: Date.now(), title, rules };
+  const version: SavedVersion = { id: crypto.randomUUID(), createdAt: Date.now(), title, rules, documentRevision };
   history.versions = [version, ...history.versions].slice(0, HISTORY_LIMIT);
   history.activeVersionId = version.id;
   if (extensionStorageAvailable()) await chrome.storage.local.set({ [storageKey(url)]: history });
@@ -28,8 +28,9 @@ export async function saveVersion(rules: StyleRule[], title: string, url = locat
 
 export async function saveHistory(history: PageHistory): Promise<void> {
   history.versions = history.versions.slice(0, HISTORY_LIMIT);
-  if (extensionStorageAvailable()) await chrome.storage.local.set({ [storageKey(history.url)]: history });
-  else localStorage.setItem(storageKey(history.url), JSON.stringify(history));
+  const key = `html-tweaker:${history.url}`;
+  if (extensionStorageAvailable()) await chrome.storage.local.set({ [key]: history });
+  else localStorage.setItem(key, JSON.stringify(history));
 }
 
 export async function setActiveVersion(versionId: string | null, url = location.href): Promise<void> {
