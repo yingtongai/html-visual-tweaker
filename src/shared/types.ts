@@ -1,4 +1,11 @@
-export type EditableProperty = 'width' | 'height' | 'fontSize' | 'color' | 'fontFamily' | 'margin' | 'borderRadius' | 'transform' | 'display' | 'maxWidth' | 'flex';
+export type EditableProperty = 'width' | 'height' | 'fontSize' | 'color' | 'fontFamily' | 'margin' | 'borderRadius' | 'transform' | 'display' | 'maxWidth' | 'maxHeight' | 'flex' | 'position' | 'left' | 'top' | 'zIndex' | 'boxSizing' | 'overflow' | 'padding' | 'objectFit';
+
+export interface CreatedElement {
+  id: string;
+  markup: string;
+  parentSelector: string;
+  afterSelector?: string;
+}
 
 export interface StyleRule {
   selector: string;
@@ -7,6 +14,8 @@ export interface StyleRule {
   textContent?: string;
   imageSource?: string;
   imageFilename?: string;
+  created?: CreatedElement;
+  deleted?: boolean;
 }
 
 export interface SavedVersion {
