@@ -750,7 +750,8 @@ async function init() {
         height: `${side}px`,
         padding: '16px',
         overflow: 'auto',
-        fontSize: '16px'
+        fontSize: '16px',
+        color: '#000000'
       }
     }, pageRootLocation());
     rules.set(rule.selector, rule);
